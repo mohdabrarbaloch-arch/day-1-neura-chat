@@ -86,9 +86,19 @@ app.include_router(conversations.router)
 app.include_router(chat.router)
 
 # --- Static UI -------------------------------------------------------------
+# Vercel builds `app/static/**` as its own static output, so the Python function
+# bundle does not always contain it. `app.mount()` raises immediately when the
+# directory is missing, which kills the import and turns every /api/* request
+# into a bare 500 while `/` happily serves the static build. Guard it.
 if STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
+
+
+# Vercel's Python runtime imports this module and serves the request directly
+# without reliably running the ASGI lifespan handler, so tables must exist at
+# import time or the first cold request fails with "no such table: users".
+init_db()

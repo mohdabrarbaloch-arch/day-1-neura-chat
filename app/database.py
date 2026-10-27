@@ -4,6 +4,7 @@ SQLite is the zero-config default so the project runs anywhere; PostgreSQL is
 used automatically when `DATABASE_URL` points at it (docker-compose does this).
 """
 
+import os
 from collections.abc import Generator
 
 from sqlalchemy import create_engine
@@ -20,7 +21,22 @@ def _engine_kwargs(url: str) -> dict:
     return {"pool_pre_ping": True, "pool_size": 5, "max_overflow": 10, "pool_recycle": 1800}
 
 
-engine = create_engine(settings.database_url, **_engine_kwargs(settings.database_url))
+def _resolve_url(url: str) -> str:
+    """Point the SQLite fallback at a writable path on serverless hosts.
+
+    Vercel's function bundle (/var/task) is read-only, so the default
+    ``sqlite:///./neurachat.db`` cannot create a file there and every request
+    dies with ``OperationalError: unable to open database file``. /tmp is the
+    one writable location on a Lambda; data does not survive a cold start, which
+    is fine for a demo and is why PostgreSQL is the documented production path.
+    """
+    if url.startswith("sqlite") and os.environ.get("VERCEL"):
+        return "sqlite:////tmp/neurachat.db"
+    return url
+
+
+DATABASE_URL = _resolve_url(settings.database_url)
+engine = create_engine(DATABASE_URL, **_engine_kwargs(DATABASE_URL))
 
 SessionLocal = sessionmaker(
     bind=engine,
