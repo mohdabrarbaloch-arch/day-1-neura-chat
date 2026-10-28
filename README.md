@@ -86,4 +86,44 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the system diagram, data flow, securi
 
 Images and PDFs are out of scope here — this project is text-only chat. The multimodal companion project is [day-2-aurora-workspace](https://github.com/mohdabrarbaloch-arch/day-2-aurora-workspace).
 
-Deployment: the repo ships a `vercel.json` and `api/index.py` serverless entrypoint. No live URL is claimed because no deployment token was available in the build environment.
+## Deployment
+
+Live at **<https://day-1-neura-chat.vercel.app>**.
+
+### The bug that made it look alive when it wasn't
+
+For a while that URL served a perfect signup form and then answered every submission with `Request failed (500)`. The page was fine. The API was dead.
+
+The cause was in `vercel.json`. It used the legacy `builds` block:
+
+```json
+{ "src": "api/index.py", "use": "@vercel/python",
+  "config": { "includeFiles": ["app/**"] } }
+```
+
+`includeFiles` in that block resolves **relative to the function's own directory** — so `app/**` was looked for at `api/app/**`, which does not exist. The `app` package was never bundled. `api/index.py` then did `from app.main import app` and died with `ModuleNotFoundError: No module named 'app'` on every cold start. Meanwhile `app/static/**` was built separately as static output, so `/` kept serving a cached HTML page. Healthy-looking site, dead API.
+
+The fix is the modern config, where `includeFiles` resolves from the project root:
+
+```json
+{
+  "functions": { "api/index.py": { "includeFiles": "app/**" } },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index.py" }]
+}
+```
+
+Two supporting changes in `app/main.py` so this class of failure can never hide again:
+
+- the static mount is guarded by a real directory check, and `/` returns an explicit `503` with a hint instead of silently falling through
+- unknown paths return **JSON 404**, not the SPA shell — so a broken route is visible from `curl` instead of looking like a working page
+
+### Deploying it yourself
+
+```bash
+npm i -g vercel
+vercel --prod
+```
+
+Set `JWT_SECRET` and, if you want real model output, `OPENAI_API_KEY` in the Vercel project's environment variables. Without a key the offline engine answers and everything still works.
+
+**One caveat worth knowing:** the SQLite fallback lives at `/tmp/neurachat.db` on Vercel, and `/tmp` does not survive a cold start. Accounts and conversations created on the live demo can vanish when the function recycles. That is fine for a demo and is exactly why `DATABASE_URL` exists — point it at Postgres and the data sticks.
