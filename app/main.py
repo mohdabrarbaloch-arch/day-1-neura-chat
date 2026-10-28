@@ -8,8 +8,9 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app import __version__
 from app.config import settings
@@ -86,16 +87,35 @@ app.include_router(conversations.router)
 app.include_router(chat.router)
 
 # --- Static UI -------------------------------------------------------------
-# Vercel builds `app/static/**` as its own static output, so the Python function
-# bundle does not always contain it. `app.mount()` raises immediately when the
-# directory is missing, which kills the import and turns every /api/* request
-# into a bare 500 while `/` happily serves the static build. Guard it.
+# `app.mount()` raises at import time when the directory is missing, and an
+# import-time crash turns every /api/* request into a bare 500 while `/` still
+# serves a cached static build — the site looks alive and the API is dead.
+# So: mount only if the directory is really there, and always answer `/` with
+# something explicit rather than letting the request fall through.
+INDEX_FILE = STATIC_DIR / "index.html"
+
 if STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-    @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+
+@app.get("/", include_in_schema=False)
+def index() -> Response:
+    """Serve the SPA shell, or say plainly that it is not in this bundle."""
+    if INDEX_FILE.is_file():
+        return FileResponse(INDEX_FILE)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "UI bundle missing from this deployment.",
+            "hint": "The API is up — see /api/health and /api/docs.",
+        },
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def not_found_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    """Return JSON for unknown paths so a broken route is never mistaken for a page."""
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 # Vercel's Python runtime imports this module and serves the request directly
